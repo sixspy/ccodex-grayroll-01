@@ -31,22 +31,3 @@ def list_audit(authorization: str | None = Header(default=None), limit: int = 80
     with connect() as conn:
         rows = conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
     return {"items": [dict(r) for r in rows]}
-
-
-@router.get("/approvals")
-def list_approvals(authorization: str | None = Header(default=None), limit: int = 80):
-    """grayroll-01 审批台账只读口：高风险发布审批痕可独立核销。"""
-    current_user(authorization)
-    with connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT a.*, e.code AS env_code, f.key AS flag_key, r.version AS release_version
-            FROM release_approvals a
-            JOIN environments e ON e.id=a.env_id
-            JOIN flags f ON f.id=a.flag_id
-            JOIN releases r ON r.id=a.release_id
-            ORDER BY a.id DESC LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-    return {"items": [dict(r) for r in rows]}

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 from pathlib import Path
 
@@ -10,8 +9,7 @@ from models import DOMAIN, PRODUCT_NAME, SKELETON, SUB_DIRECTION, USERS
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
-# grayroll-01：允许经环境变量指定库文件（测试/并发脚本隔离用），默认沿用单文件库路径。
-DB_PATH = Path(os.environ.get("GRAYROLL_DB", DATA / "app.db"))
+DB_PATH = DATA / "app.db"
 FIXTURES = ROOT / "fixtures"
 FRONTEND = ROOT / "frontend"
 
@@ -25,35 +23,10 @@ PRODUCT_META = {
 
 def connect() -> sqlite3.Connection:
     DATA.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10.0)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=10000")
     return conn
-
-
-def lock_connect() -> sqlite3.Connection:
-    """咨询锁专用连接：autocommit 模式（isolation_level=None），事务边界完全显式。
-
-    避免 Python sqlite3 默认 deferred 自动事务在 WAL 快照下让并发双方各判成功。
-    """
-    DATA.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10.0, isolation_level=None)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=10000")
-    return conn
-
-
-def txn_connect() -> sqlite3.Connection:
-    """写事务连接：autocommit 模式，由调用方显式 BEGIN IMMEDIATE/commit/rollback。
-
-    BEGIN IMMEDIATE 在事务起点即取得 SQLite 写锁，把并发的同开关同环境写请求在引擎层
-    串行化；锁行与业务写在同一事务同一连接，提交时一起落库、回滚时一起撤销，无跨连接互锁。
-    """
-    return lock_connect()
 
 
 SCHEMA = """
@@ -94,7 +67,6 @@ CREATE TABLE IF NOT EXISTS flag_rules(
   cohort_id INTEGER REFERENCES cohorts(id),
   version INTEGER NOT NULL DEFAULT 1,
   official INTEGER NOT NULL DEFAULT 1,
-  approval_no TEXT,
   updated_at REAL NOT NULL,
   UNIQUE(flag_id, env_id, official)
 );
@@ -117,19 +89,8 @@ CREATE TABLE IF NOT EXISTS releases(
   summary TEXT NOT NULL,
   status TEXT NOT NULL,
   official INTEGER NOT NULL DEFAULT 1,
-  approval_no TEXT,
   published_at REAL,
   published_by TEXT
-);
-CREATE TABLE IF NOT EXISTS release_approvals(
-  id INTEGER PRIMARY KEY,
-  release_id INTEGER NOT NULL REFERENCES releases(id),
-  flag_id INTEGER NOT NULL REFERENCES flags(id),
-  env_id INTEGER NOT NULL REFERENCES environments(id),
-  approval_no TEXT NOT NULL,
-  actor TEXT NOT NULL,
-  created_at REAL NOT NULL,
-  UNIQUE(env_id, approval_no)
 );
 CREATE TABLE IF NOT EXISTS release_shadows(
   id INTEGER PRIMARY KEY,
@@ -318,25 +279,8 @@ def seed(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT INTO experiment_bridge_stub(id, note) VALUES(1, ?)", ("实验平台桥接空桩未接通",))
 
 
-def _migrate(conn: sqlite3.Connection) -> None:
-    """幂等补列：老库（data/app.db）升级到审批号口径，新库建表已自带列。"""
-    have = {
-        r["name"]
-        for r in conn.execute("PRAGMA table_info(flag_rules)").fetchall()
-    }
-    if "approval_no" not in have:
-        conn.execute("ALTER TABLE flag_rules ADD COLUMN approval_no TEXT")
-    have = {
-        r["name"]
-        for r in conn.execute("PRAGMA table_info(releases)").fetchall()
-    }
-    if "approval_no" not in have:
-        conn.execute("ALTER TABLE releases ADD COLUMN approval_no TEXT")
-
-
 def init_db() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
-        _migrate(conn)
         seed(conn)
         conn.commit()

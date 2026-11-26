@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 from auth import current_user
 from db import connect
-from policies import combine_rule, eval_percent, is_high_risk
+from policies import combine_rule, eval_percent
 from validators import require_str
 
 router = APIRouter(prefix="/api/evaluate", tags=["evaluate"])
@@ -62,39 +62,13 @@ def evaluate(body: EvalIn, authorization: str | None = Header(default=None)):
                 "version": None,
             }
         rule = conn.execute(
-            """
-            SELECT r.*, ra.approval_no AS ledger_approval_no
-            FROM flag_rules r
-            LEFT JOIN release_approvals ra
-              ON ra.flag_id=r.flag_id AND ra.env_id=r.env_id AND ra.approval_no=r.approval_no
-            WHERE r.flag_id=? AND r.env_id=? AND r.official=1
-            """,
+            "SELECT * FROM flag_rules WHERE flag_id=? AND env_id=? AND official=1",
             (fl["id"], env["id"]),
         ).fetchone()
         if not rule:
             return {
                 "enabled": False,
                 "reason": "no_official_rule",
-                "flag_key": flag_key,
-                "env_code": env_code,
-                "subject_key": subject,
-            }
-        high_risk = is_high_risk(env)
-        approved = (not high_risk) or (
-            rule["approval_no"] is not None
-            and rule["ledger_approval_no"] is not None
-            and rule["approval_no"] == rule["ledger_approval_no"]
-        )
-        if not approved:
-            # grayroll-01：高风险规则缺审批台账同源即未生效，禁止按新比例假绿
-            return {
-                "enabled": False,
-                "reason": "rule_pending_approval",
-                "kind": rule["kind"],
-                "percent": rule["percent"],
-                "version": rule["version"],
-                "approved": False,
-                "approval_no": rule["approval_no"],
                 "flag_key": flag_key,
                 "env_code": env_code,
                 "subject_key": subject,
@@ -117,8 +91,6 @@ def evaluate(body: EvalIn, authorization: str | None = Header(default=None)):
             "percent_hit": percent_hit,
             "cohort_hit": cohort_hit,
             "version": rule["version"],
-            "approved": True,
-            "approval_no": rule["approval_no"],
             "flag_key": flag_key,
             "env_code": env_code,
             "subject_key": subject,
@@ -134,19 +106,10 @@ def eval_board(authorization: str | None = Header(default=None)):
             dict(r)
             for r in conn.execute(
                 """
-                SELECT f.key AS flag_key, f.status, e.code AS env_code, e.risk_level AS env_risk_level,
-                       r.kind, r.percent, r.version, r.cohort_id, r.approval_no AS approval_no,
-                       ra.approval_no AS ledger_approval_no,
-                       CASE WHEN e.risk_level >= 3 THEN 1 ELSE 0 END AS high_risk,
-                       CASE WHEN e.risk_level < 3
-                              OR (r.approval_no IS NOT NULL AND ra.approval_no IS NOT NULL
-                                  AND r.approval_no = ra.approval_no)
-                            THEN 1 ELSE 0 END AS approved
+                SELECT f.key AS flag_key, f.status, e.code AS env_code, r.kind, r.percent, r.version, r.cohort_id
                 FROM flag_rules r
                 JOIN flags f ON f.id=r.flag_id
                 JOIN environments e ON e.id=r.env_id
-                LEFT JOIN release_approvals ra
-                  ON ra.flag_id=r.flag_id AND ra.env_id=r.env_id AND ra.approval_no=r.approval_no
                 WHERE r.official=1
                 ORDER BY f.key, e.risk_level
                 """
