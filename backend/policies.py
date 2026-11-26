@@ -2,11 +2,16 @@
 from __future__ import annotations
 
 import hashlib
+import time
 
 from fastapi import HTTPException
 
 WRITE_OFFICIAL = "official"
 WRITE_SHADOW = "shadow"
+
+# grayroll-01：高风险环境阈值（risk_level >= 此值即强制审批号），种子数据中对应 prod。
+HIGH_RISK_LEVEL = 3
+APPROVAL_MIN_LEN = 4
 
 H3_PATHS = {
     "release": {
@@ -65,3 +70,38 @@ def combine_rule(kind: str, percent_hit: bool, cohort_hit: bool) -> bool:
     if kind == "percent_and_cohort":
         return percent_hit and cohort_hit
     return False
+
+
+def is_high_risk(env_row) -> bool:
+    """环境是否高风险（grayroll-01 审批闸口径）。"""
+    return env_row is not None and int(env_row["risk_level"]) >= HIGH_RISK_LEVEL
+
+
+def require_approval_no(raw: object) -> str:
+    """审批号入参校验：非空字符串、去空白后不少于最小长度。"""
+    if not isinstance(raw, str):
+        raise HTTPException(400, detail="高风险环境正式发布须附审批号")
+    no = raw.strip()
+    if len(no) < APPROVAL_MIN_LEN:
+        raise HTTPException(400, detail="高风险环境正式发布须附审批号")
+    return no
+
+
+def assert_approval_unused(conn, env_id: int, approval_no: str) -> None:
+    """同环境审批号不得重复核销（台账 UNIQUE 的显式友好报错）。"""
+    row = conn.execute(
+        "SELECT 1 FROM release_approvals WHERE env_id=? AND approval_no=?",
+        (env_id, approval_no),
+    ).fetchone()
+    if row:
+        raise HTTPException(400, detail="审批号已在本环境核销，不可重复发布")
+
+
+def write_approval_ledger(conn, release_id: int, flag_id: int, env_id: int,
+                          approval_no: str, actor: str) -> None:
+    """审批台账落库；与规则/发布行同事务，UNIQUE 冲突由调用方整笔回滚。"""
+    conn.execute(
+        "INSERT INTO release_approvals(release_id, flag_id, env_id, approval_no, actor, created_at) "
+        "VALUES(?,?,?,?,?,?)",
+        (release_id, flag_id, env_id, approval_no, actor, time.time()),
+    )

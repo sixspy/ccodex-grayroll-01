@@ -26,6 +26,7 @@ export const FlagsView = {
     </div>
     <div class="panel span-7">
       <h2>开关列表</h2>
+      <p class="hint">开关在高风险环境（prod）的正式发布强制审批号同事务落库；缺审批号正式零增，求值不把未审批规则当已生效。</p>
       <table>
         <thead><tr><th>键</th><th>标题</th><th>状态</th><th>负责人</th></tr></thead>
         <tbody>

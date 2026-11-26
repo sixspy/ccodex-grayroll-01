@@ -25,14 +25,25 @@ export const EvaluateView = {
       <button class="btn" @click="run">求值</button>
       <div class="err" v-if="err">{{ err }}</div>
       <pre v-if="result" style="margin-top:0.8rem">{{ result }}</pre>
+      <p class="hint" v-if="result && result.reason==='rule_pending_approval'">
+        高风险规则缺审批台账同源，按未生效处理（enabled=false），不把未升正/未审批比例当假绿。
+      </p>
+      <p class="hint" v-else-if="result && result.approval_no">
+        已审批同源生效，审批号：<code>{{ result.approval_no }}</code>，版本 v{{ result.version }}。
+      </p>
     </div>
     <div class="panel span-7">
       <h2>正式规则板</h2>
       <table v-if="board">
-        <thead><tr><th>开关</th><th>环境</th><th>类型</th><th>%</th><th>版本</th></tr></thead>
+        <thead><tr><th>开关</th><th>环境</th><th>类型</th><th>%</th><th>版本</th><th>审批同源</th></tr></thead>
         <tbody>
           <tr v-for="(r,i) in board.rules" :key="i">
             <td>{{ r.flag_key }}</td><td>{{ r.env_code }}</td><td>{{ r.kind }}</td><td>{{ r.percent }}</td><td>v{{ r.version }}</td>
+            <td>
+              <span class="pill danger" v-if="r.high_risk && !r.approved">未审批 · 不生效</span>
+              <code v-else-if="r.approval_no">{{ r.approval_no }}</code>
+              <span class="muted" v-else>常规环境</span>
+            </td>
           </tr>
         </tbody>
       </table>

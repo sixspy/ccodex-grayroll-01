@@ -8,8 +8,8 @@ from pydantic import BaseModel
 
 from audit_svc import write_audit, write_history
 from auth import current_user, require_writer
-from db import connect
-from locks import acquire, release
+from db import connect, txn_connect
+from locks import acquire_or_409
 from validators import require_int, require_percent, require_rule_kind, require_str
 
 router = APIRouter(prefix="/api/restore", tags=["restore"])
@@ -56,39 +56,42 @@ def restore(body: RestoreIn, authorization: str | None = Header(default=None)):
     pct = require_percent(body.percent)
     note = require_str(body.note, "恢复说明", 4)
     key = f"flag-restore:{fid}:{eid}"
-    with connect() as conn:
-        acquire(conn, key, user["username"])
-        try:
-            fl = conn.execute("SELECT * FROM flags WHERE id=?", (fid,)).fetchone()
-            if not fl:
-                raise HTTPException(404, detail="开关不存在")
-            if fl["status"] != "killed":
-                raise HTTPException(400, detail="仅已熔断开关可走恢复")
-            if not conn.execute("SELECT 1 FROM environments WHERE id=?", (eid,)).fetchone():
-                raise HTTPException(404, detail="环境不存在")
-            now = time.time()
-            old = conn.execute(
-                "SELECT * FROM flag_rules WHERE flag_id=? AND env_id=? AND official=1", (fid, eid)
-            ).fetchone()
-            ver = (old["version"] + 1) if old else 1
-            if old:
-                conn.execute("DELETE FROM flag_rules WHERE id=?", (old["id"],))
-            conn.execute(
-                "INSERT INTO flag_rules(flag_id, env_id, kind, percent, cohort_id, version, official, updated_at) "
-                "VALUES(?,?,?,?,?,?,1,?)",
-                (fid, eid, kind, pct, body.cohort_id, ver, now),
-            )
-            conn.execute("UPDATE flags SET status='active' WHERE id=?", (fid,))
-            cur = conn.execute(
-                "INSERT INTO releases(flag_id, env_id, version, summary, status, official, published_at, published_by) "
-                "VALUES(?,?,?,?,?,?,?,?)",
-                (fid, eid, ver, f"恢复：{note}", "published", 1, now, user["username"]),
-            )
-            rid = cur.lastrowid
-            write_audit(conn, user["username"], "restore", "release", rid, note)
-            write_history(conn, user["username"], "restore", note, flag_id=fid, env_id=eid)
-            conn.commit()
-            return {"release_id": rid, "version": ver, "status": "active"}
-        finally:
-            release(conn, key, user["username"])
-            conn.commit()
+    conn = txn_connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        acquire_or_409(conn, key, user["username"])
+        fl = conn.execute("SELECT * FROM flags WHERE id=?", (fid,)).fetchone()
+        if not fl:
+            raise HTTPException(404, detail="开关不存在")
+        if fl["status"] != "killed":
+            raise HTTPException(400, detail="仅已熔断开关可走恢复")
+        if not conn.execute("SELECT 1 FROM environments WHERE id=?", (eid,)).fetchone():
+            raise HTTPException(404, detail="环境不存在")
+        now = time.time()
+        old = conn.execute(
+            "SELECT * FROM flag_rules WHERE flag_id=? AND env_id=? AND official=1", (fid, eid)
+        ).fetchone()
+        ver = (old["version"] + 1) if old else 1
+        if old:
+            conn.execute("DELETE FROM flag_rules WHERE id=?", (old["id"],))
+        conn.execute(
+            "INSERT INTO flag_rules(flag_id, env_id, kind, percent, cohort_id, version, official, updated_at) "
+            "VALUES(?,?,?,?,?,?,1,?)",
+            (fid, eid, kind, pct, body.cohort_id, ver, now),
+        )
+        conn.execute("UPDATE flags SET status='active' WHERE id=?", (fid,))
+        cur = conn.execute(
+            "INSERT INTO releases(flag_id, env_id, version, summary, status, official, published_at, published_by) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (fid, eid, ver, f"恢复：{note}", "published", 1, now, user["username"]),
+        )
+        rid = cur.lastrowid
+        write_audit(conn, user["username"], "restore", "release", rid, note)
+        write_history(conn, user["username"], "restore", note, flag_id=fid, env_id=eid)
+        conn.commit()
+        return {"release_id": rid, "version": ver, "status": "active"}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()

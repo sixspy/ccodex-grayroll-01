@@ -22,6 +22,24 @@ def dashboard(authorization: str | None = Header(default=None)):
             "SELECT COUNT(*) c FROM release_shadows WHERE status='open'"
         ).fetchone()["c"]
         overrides = conn.execute("SELECT COUNT(*) c FROM overrides WHERE active=1").fetchone()["c"]
+        high_risk_approved = conn.execute(
+            """
+            SELECT COUNT(*) c FROM flag_rules r
+            JOIN environments e ON e.id=r.env_id
+            JOIN release_approvals ra
+              ON ra.flag_id=r.flag_id AND ra.env_id=r.env_id AND ra.approval_no=r.approval_no
+            WHERE r.official=1 AND e.risk_level >= 3
+            """
+        ).fetchone()["c"]
+        high_risk_pending = conn.execute(
+            """
+            SELECT COUNT(*) c FROM flag_rules r
+            JOIN environments e ON e.id=r.env_id
+            LEFT JOIN release_approvals ra
+              ON ra.flag_id=r.flag_id AND ra.env_id=r.env_id AND ra.approval_no=r.approval_no
+            WHERE r.official=1 AND e.risk_level >= 3 AND ra.id IS NULL
+            """
+        ).fetchone()["c"]
         by_status = [
             {
                 "status": r["status"],
@@ -43,6 +61,8 @@ def dashboard(authorization: str | None = Header(default=None)):
         "releases": releases,
         "open_shadows": shadows,
         "active_overrides": overrides,
+        "high_risk_approved": high_risk_approved,
+        "high_risk_pending": high_risk_pending,
         "by_status": by_status,
         "recent": recent,
     }

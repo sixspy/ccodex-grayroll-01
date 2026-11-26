@@ -17,10 +17,13 @@ def list_history(authorization: str | None = Header(default=None), limit: int = 
             dict(r)
             for r in conn.execute(
                 """
-                SELECT h.*, f.key AS flag_key, e.code AS env_code
+                SELECT h.*, f.key AS flag_key, e.code AS env_code, ra.approval_no AS ledger_approval_no
                 FROM change_history h
                 LEFT JOIN flags f ON f.id=h.flag_id
                 LEFT JOIN environments e ON e.id=h.env_id
+                LEFT JOIN release_approvals ra
+                  ON ra.flag_id=h.flag_id AND ra.env_id=h.env_id
+                 AND h.detail LIKE '%approval_no=' || ra.approval_no || '%'
                 ORDER BY h.id DESC
                 LIMIT ?
                 """,
